@@ -1,0 +1,129 @@
+import os
+import pandas as pd
+import requests
+from openpyxl import Workbook
+
+
+# Базовий клієнт для роботи з API
+class SWAPIClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+
+    def fetch_json(self, endpoint: str) -> list:
+        url = f"{self.base_url}/{endpoint}/"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("results", [])
+
+
+# Базовий клас (інтерфейс) для процесорів
+class EntityProcessor:
+    def process(self, json_data: list) -> pd.DataFrame:
+        """Обробка даних. Реалізується в дочірніх класах."""
+        raise NotImplementedError("Метод process повинен бути реалізований")
+
+
+# Процесор для people
+class PeopleProcessor(EntityProcessor):
+    def process(self, json_data: list) -> pd.DataFrame:
+        if not json_data:
+            print("Увага: дані для 'people' порожні.")
+            return pd.DataFrame()
+        df = pd.DataFrame(json_data)
+        df["full_name"] = df["name"]  # Додаємо колонку з повним ім'ям
+        return df
+
+
+# Процесор для planets
+class PlanetsProcessor(EntityProcessor):
+    def process(self, json_data: list) -> pd.DataFrame:
+        if not json_data:
+            print("Увага: дані для 'planets' порожні.")
+            return pd.DataFrame()
+        df = pd.DataFrame(json_data)
+        df["population"] = pd.to_numeric(df["population"], errors="coerce")  # Приводимо до числового типу
+        return df
+
+
+# Процесор для films (новий процесор)
+class FilmsProcessor(EntityProcessor):
+    def process(self, json_data: list) -> pd.DataFrame:
+        if not json_data:
+            print("Увага: дані для 'films' порожні.")
+            return pd.DataFrame()
+        df = pd.DataFrame(json_data)
+        df["release_year"] = pd.to_datetime(df["release_date"]).dt.year  # Додаємо рік випуску
+        return df
+
+
+# Менеджер для роботи з даними
+class SWAPIDataManager:
+    def __init__(self, client: SWAPIClient):
+        self.client = client
+        self.processors = {}
+        self.data = {}
+
+    def register_processor(self, endpoint: str, processor: EntityProcessor):
+        """Реєстрація процесора для сутності."""
+        self.processors[endpoint] = processor
+
+    def fetch_entity(self, endpoint: str):
+        """Завантаження та обробка даних для сутності."""
+        if endpoint not in self.processors:
+            raise ValueError(f"Процесор для '{endpoint}' не зареєстрований")
+        print(f"Завантаження даних для '{endpoint}'...")
+        json_data = self.client.fetch_json(endpoint)
+        if not json_data:
+            print(f"Увага: для '{endpoint}' не отримано даних із API.")
+        processor = self.processors[endpoint]
+        self.data[endpoint] = processor.process(json_data)
+
+    def save_to_excel(self, filename: str):
+        """Збереження всіх оброблених даних у файл Excel."""
+        filename = os.path.abspath(filename)  # Формування абсолютного шляху
+
+        # Спроба збереження в іншій папці, якщо не вдається вказати оригінальну папку
+        try:
+            with pd.ExcelWriter(filename) as writer:
+                for endpoint, df in self.data.items():
+                    sheet_name = endpoint[:31]  # Excel обмежує назву аркуша до 31 символу
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"Дані успішно збережено у файл: {filename}")
+        except PermissionError as e:
+            print(f"Помилка доступу: {e}")
+            # Збереження в тимчасову папку
+            temp_filename = os.path.join(os.getenv("TEMP"), "Swapi_fallback.xlsx")
+            with pd.ExcelWriter(temp_filename) as writer:
+                for endpoint, df in self.data.items():
+                    sheet_name = endpoint[:31]
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"Дані збережено в тимчасову папку: {temp_filename}")
+
+
+# Реалізація CLI-інтерфейсу
+def main():
+    client = SWAPIClient(base_url="https://swapi.dev/api/")
+    manager = SWAPIDataManager(client)
+
+    # Реєстрація процесорів
+    manager.register_processor("people", PeopleProcessor())
+    manager.register_processor("planets", PlanetsProcessor())
+    manager.register_processor("films", FilmsProcessor())
+
+    # Завантаження та обробка даних
+    try:
+        manager.fetch_entity("people")
+        manager.fetch_entity("planets")
+        manager.fetch_entity("films")
+    except requests.RequestException as e:
+        print(f"Помилка під час завантаження даних: {e}")
+        return
+
+    # Збереження у файл
+    output_file = "C:/Users/User/OneDrive/Робочий стіл/Swapi.xlsx"
+    manager.save_to_excel(output_file)
+
+if __name__ == "__main__":
+    main()
+
